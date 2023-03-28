@@ -5,6 +5,7 @@
 
 #define NGX_JDOMAIN_STATUS_DONE 0
 #define NGX_JDOMAIN_STATUS_WAIT 1
+#define NGX_JDOMAIN_STATUS_INIT 2
 
 #define NGX_JDOMAIN_DEFAULT_SERVER_FAIL_TIMEOUT 10
 #define NGX_JDOMAIN_DEFAULT_SERVER_MAX_FAILS 1
@@ -255,10 +256,20 @@ ngx_http_upstream_init_jdomain_peer(ngx_http_request_t *r, ngx_http_upstream_srv
 			  NGX_LOG_ALERT, r->connection->log, 0, "ngx_http_upstream_jdomain_module: ngx_resolve_name \"%V\" fail", &ctx->name);
 			continue;
 		}
+		if (instance[i].state.resolve.status == NGX_JDOMAIN_STATUS_INIT) {
+			rc = NGX_BUSY;
+		}
 		if (ctx->state == NGX_AGAIN) {
 			instance[i].state.resolve.status = NGX_JDOMAIN_STATUS_WAIT;
 		}
 	}
+    
+    if (rc == NGX_OK) {
+        for (i = 0; i < jcf->instances->nelts; i++) {
+            // DUSTIN TODO - Should we return NGX_BUSY here if all of our instances are in the NGX_JDOMAIN_STATUS_WAIT state and they don't have valid addresses yet?
+            if (instance[i].state.resolve.status = 
+        }
+    }
 
 end:
 	return rc;
@@ -608,6 +619,7 @@ ngx_http_upstream_jdomain(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 		arglen = ngx_strlen(NGX_JDOMAIN_ARG_STR_DEFER);
 		if (value[i].len == arglen && ngx_strncmp(value[i].data, NGX_JDOMAIN_ARG_STR_DEFER, arglen) == 0) {
 			instance->conf.defer = 1;
+			instance->state.resolve.status = NGX_JDOMAIN_STATUS_INIT;
 			continue;
 		}
 
