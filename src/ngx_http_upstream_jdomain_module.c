@@ -24,6 +24,7 @@
 #define NGX_JDOMAIN_ARG_STR_PORT "port="
 #define NGX_JDOMAIN_ARG_STR_IPVER "ipver="
 #define NGX_JDOMAIN_ARG_STR_STRICT "strict"
+#define NGX_JDOMAIN_ARG_STR_DEFER "defer"
 
 typedef struct
 {
@@ -34,6 +35,7 @@ typedef struct
 		ngx_uint_t max_ips;
 		in_port_t port;
 		ngx_uint_t strict;
+		ngx_uint_t defer;
 		short addr_family; /* ipver= */
 	} conf;
 	struct
@@ -485,7 +487,7 @@ ngx_http_upstream_jdomain(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 	ngx_int_t num;
 	ngx_url_t u;
 	ngx_uint_t i;
-	ngx_uint_t f;
+	ngx_uint_t f = 0;
 	char *rc;
 
 	NGX_JDOMAIN_INVALID_ADDR_SOCKADDR_IN.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -603,6 +605,12 @@ ngx_http_upstream_jdomain(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 			continue;
 		}
 
+		arglen = ngx_strlen(NGX_JDOMAIN_ARG_STR_DEFER);
+		if (value[i].len == arglen && ngx_strncmp(value[i].data, NGX_JDOMAIN_ARG_STR_DEFER, arglen) == 0) {
+			instance->conf.defer = 1;
+			continue;
+		}
+
 		goto invalid;
 	}
 
@@ -634,35 +642,43 @@ ngx_http_upstream_jdomain(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 	}
 
 	/* Initial domain name resolution */
-	if (ngx_parse_url(cf->temp_pool, &u) != NGX_OK) {
-		ngx_sprintf(errstr, "ngx_http_upstream_jdomain_module: %s in upstream \"%V\"", u.err ? u.err : "error", &u.url);
-		if (!exists_alt_server) {
-			goto failure;
-		}
-		ngx_conf_log_error(NGX_LOG_WARN, cf, 0, (const char *)errstr);
-	}
+    addr = server->addrs = instance->state.data.addrs->elts;
+    name = instance->state.data.names->elts;
+    sockaddr = instance->state.data.sockaddrs->elts;
 
-	addr = server->addrs = instance->state.data.addrs->elts;
-	name = instance->state.data.names->elts;
-	sockaddr = instance->state.data.sockaddrs->elts;
-	/* Copy the resolved sockaddrs and address names (IP:PORT) into our state data buffers */
-	f = 0;
-	for (i = 0; i < u.naddrs; i++) {
-		if (instance->conf.addr_family != NGX_JDOMAIN_FAMILY_DEFAULT &&
-		    instance->conf.addr_family != u.addrs[i].sockaddr->sa_family) {
-			continue;
-		}
-		addr[f].name.data = &name[f * NGX_SOCKADDR_STRLEN];
-		addr[f].name.len = u.addrs[i].name.len;
-		ngx_memcpy(addr[f].name.data, u.addrs[i].name.data, addr[f].name.len);
-		addr[f].sockaddr = &sockaddr[f].sockaddr;
-		addr[f].socklen = u.addrs[i].socklen;
-		ngx_memcpy(addr[f].sockaddr, u.addrs[i].sockaddr, addr[f].socklen);
-		f++;
-		if (instance->conf.max_ips == f) {
-			break;
-		}
-	}
+    if (!instance->conf.defer) {
+        if (ngx_parse_url(cf->temp_pool, &u) != NGX_OK) {
+            ngx_sprintf(errstr, "ngx_http_upstream_jdomain_module: %s in upstream \"%V\"", u.err ? u.err : "error", &u.url);
+            if (!exists_alt_server) {
+                goto failure;
+            }
+            ngx_conf_log_error(NGX_LOG_WARN, cf, 0, (const char *)errstr);
+        }
+
+        /* Copy the resolved sockaddrs and address names (IP:PORT) into our state data buffers */
+        for (i = 0; i < u.naddrs; i++) {
+            if (instance->conf.addr_family != NGX_JDOMAIN_FAMILY_DEFAULT &&
+                instance->conf.addr_family != u.addrs[i].sockaddr->sa_family) {
+                continue;
+            }
+            addr[f].name.data = &name[f * NGX_SOCKADDR_STRLEN];
+            addr[f].name.len = u.addrs[i].name.len;
+            ngx_memcpy(addr[f].name.data, u.addrs[i].name.data, addr[f].name.len);
+            addr[f].sockaddr = &sockaddr[f].sockaddr;
+            addr[f].socklen = u.addrs[i].socklen;
+            ngx_memcpy(addr[f].sockaddr, u.addrs[i].sockaddr, addr[f].socklen);
+            f++;
+            if (instance->conf.max_ips == f) {
+                break;
+            }
+        }
+
+        instance->state.resolve.access = ngx_time();
+    } else {
+        /* Set the last resolved time as expired to force resolution on the first request */
+        instance->state.resolve.access = ngx_time() - instance->conf.interval;
+    }
+
 	instance->state.data.naddrs = server->naddrs = f;
 	/* Copy the sockaddr and address name of the invalid address (0.0.0.0:0) into the remaining buffers */
 	for (i = instance->state.data.naddrs; i < instance->conf.max_ips; i++) {
@@ -679,8 +695,6 @@ ngx_http_upstream_jdomain(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 	/* This is a hack to guarantee the creation of enough round robin peers up front so we can minimize memory manipulation */
 	server->naddrs = instance->conf.max_ips;
-
-	instance->state.resolve.access = ngx_time();
 
 	goto end;
 
