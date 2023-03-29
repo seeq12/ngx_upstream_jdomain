@@ -223,6 +223,52 @@ ngx_http_upstream_init_jdomain_peer(ngx_http_request_t *r, ngx_http_upstream_srv
 			continue;
 		}
 
+        /*  */
+        if (instance[i].state.resolve.status == NGX_JDOMAIN_STATUS_INIT) {
+            if (ngx_time() <= instance[i].state.resolve.access + instance[i].conf.interval) {
+                ngx_addr_t *addr;
+                u_char *name;
+                ngx_sockaddr_t *sockaddr;
+
+                ngx_url_t u;
+                ngx_uint_t i;
+                ngx_uint_t f = 0;
+
+                instance[i].state.resolve.access  = ngx_time();
+                if (ngx_parse_url(r->pool, &u) != NGX_OK) {
+                    ngx_log_error(NGX_LOG_ALERT,
+                                  r->connection->log,
+                                  0,
+                                  "ngx_http_upstream_jdomain_module: deferred init failed for \"%V\"",
+                                  &instance[i].conf.domain);
+                    continue;
+                }
+
+                addr = instance->state.data.addrs->elts;
+                name = instance->state.data.names->elts;
+                sockaddr = instance->state.data.sockaddrs->elts;
+
+                for (i = 0; i < u.naddrs; i++) {
+                    if (instance->conf.addr_family != NGX_JDOMAIN_FAMILY_DEFAULT &&
+                        instance->conf.addr_family != u.addrs[i].sockaddr->sa_family) {
+                        continue;
+                    }
+                    addr[f].name.data = &name[f * NGX_SOCKADDR_STRLEN];
+                    addr[f].name.len = u.addrs[i].name.len;
+                    ngx_memcpy(addr[f].name.data, u.addrs[i].name.data, addr[f].name.len);
+                    addr[f].sockaddr = &sockaddr[f].sockaddr;
+                    addr[f].socklen = u.addrs[i].socklen;
+                    ngx_memcpy(addr[f].sockaddr, u.addrs[i].sockaddr, addr[f].socklen);
+                    f++;
+                    if (instance->conf.max_ips == f) {
+                        break;
+                    }
+                }
+            } else {
+                continue;
+            }
+        }
+
 		ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_upstream_jdomain_module: update from DNS cache");
 
 		/* Initialize resolver context with our domain name, a handler function, and our configured timeout */
@@ -263,13 +309,6 @@ ngx_http_upstream_init_jdomain_peer(ngx_http_request_t *r, ngx_http_upstream_srv
 			instance[i].state.resolve.status = NGX_JDOMAIN_STATUS_WAIT;
 		}
 	}
-    
-    if (rc == NGX_OK) {
-        for (i = 0; i < jcf->instances->nelts; i++) {
-            // DUSTIN TODO - Should we return NGX_BUSY here if all of our instances are in the NGX_JDOMAIN_STATUS_WAIT state and they don't have valid addresses yet?
-            if (instance[i].state.resolve.status = 
-        }
-    }
 
 end:
 	return rc;
